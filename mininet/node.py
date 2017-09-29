@@ -1045,6 +1045,18 @@ class OVSSwitch( Switch ):
            reconnectms: max reconnect timeout in ms (0/None for default)
            stp: enable STP (False, requires failMode=standalone)
            batch: enable batch startup (False)"""
+        if params.get( 'inNamespace', False ):
+            privateDirs = params.pop( 'privateDirs', [] )
+            if os.path.isfile( '/usr/local/sbin/ovs-vswitchd' ):
+                self._isSourceBuild = True
+                params[ 'privateDirs' ] = privateDirs + [
+                    '/usr/local/var/run/openvswitch',
+                    '/usr/local/etc/openvswitch' ]
+            else:
+                self._isSourceBuild = False
+                params[ 'privateDirs' ] = privateDirs + [
+                    '/var/run/openvswitch',
+                    '/etc/openvswitch' ]
         Switch.__init__( self, name, **params )
         self.failMode = failMode
         self.datapath = datapath
@@ -1083,6 +1095,14 @@ class OVSSwitch( Switch ):
         "Is OVS ersion < 1.10?"
         return ( StrictVersion( cls.OVSVersion ) <
                  StrictVersion( '1.10' ) )
+
+    def ctl( self, *args, **kwargs ):
+        "Run ovs-ctl command"
+        if self._isSourceBuild:
+            cmd = '/usr/local/share/openvswitch/scripts/'
+        else:
+            cmd = '/usr/share/openvswitch/scripts/'
+        return self.cmd( cmd + 'ovs-ctl', *args, **kwargs )
 
     def dpctl( self, *args ):
         "Run ovs-ofctl command"
@@ -1165,8 +1185,7 @@ class OVSSwitch( Switch ):
     def start( self, controllers ):
         "Start up a new OVS OpenFlow switch using ovs-vsctl"
         if self.inNamespace:
-            raise Exception(
-                'OVS kernel switch does not work in a namespace' )
+            self.ctl( 'start', '--system-id=%s' % self.name )
         int( self.dpid, 16 )  # DPID must be a hex string
         # Command to add interfaces
         intfs = ''.join( ' -- add-port %s %s' % ( self, intf ) +
@@ -1240,12 +1259,16 @@ class OVSSwitch( Switch ):
         self.cmd( 'ovs-vsctl del-br', self )
         if self.datapath == 'user':
             self.cmd( 'ip link del', self )
+        if self.inNamespace:
+            self.ctl( 'stop' )
         super( OVSSwitch, self ).stop( deleteIntfs )
 
     @classmethod
     def batchShutdown( cls, switches, run=errRun ):
         "Shut down a list of OVS switches"
         delcmd = 'del-br %s'
+        # Do batch shut down only when switch is not in namespace
+        switches = [ s for s in switches if not s.inNamespace ]
         if switches and not switches[ 0 ].isOldOVS():
             delcmd = '--if-exists ' + delcmd
         # First, delete them all from ovsdb
